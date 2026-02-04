@@ -547,6 +547,7 @@ const Settings = ({onBack, onLogout, onAddServer, onAddUser}) => {
 			<div className={css.settingsGroup}>
 				<h2>Transcoding</h2>
 				{renderToggleItem('Prefer Transcoding', 'Request transcoded streams when available', 'preferTranscode')}
+				{renderToggleItem('Transcode Complex Subtitles', 'Burn in ASS/SSA/PGS/VobSub subtitles on the server when selected', 'transcodeComplexSubtitles')}
 			</div>
 		</div>
 	);

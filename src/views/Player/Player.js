@@ -66,6 +66,19 @@ const QUALITY_PRESETS = [
 
 const CONTROLS_HIDE_DELAY = 5000;
 
+
+
+// Complex subtitle formats require server-side rendering (burn-in) on webOS.
+// - ASS/SSA: advanced positioning/movement not supported by our JSON renderer
+// - Image-based subs (PGS/VobSub/DVDSub): not text-based, cannot be rendered client-side
+const isComplexSubtitleStream = (stream) => {
+	if (!stream) return false;
+	const codec = String(stream.codec || '').toLowerCase();
+	if (codec === 'ass' || codec === 'ssa') return true;
+	if (stream.isTextBased === false) return true;
+	return false;
+};
+
 // SVG Icon components
 const IconPlay = () => (
 	<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
@@ -179,6 +192,7 @@ const Player = ({item, initialAudioIndex, initialSubtitleIndex, onEnded, onBack,
 	const [focusRow, setFocusRow] = useState('top');
 
 	const videoRef = useRef(null);
+	const burnInAppliedRef = useRef(false);
 	const hlsRef = useRef(null);
 	const positionRef = useRef(0);
 	const playSessionRef = useRef(null);
@@ -343,6 +357,13 @@ const Player = ({item, initialAudioIndex, initialSubtitleIndex, onEnded, onBack,
 
 				// Helper to load subtitle data
 				const loadSubtitleData = async (sub) => {
+// If enabled, burn-in complex subtitles on the server instead of client rendering.
+if (settings.transcodeComplexSubtitles && isComplexSubtitleStream(sub) && !burnInAppliedRef.current) {
+	console.log('[Player] Complex subtitle selected; reloading with server burn-in:', sub?.codec, 'index:', sub?.index);
+	await reloadWithBurnIn(sub.index);
+	return;
+}
+
 					console.log('[Player] loadSubtitleData called for:', sub?.index, 'isTextBased:', sub?.isTextBased);
 					if (sub && sub.isTextBased) {
 						try {
@@ -924,6 +945,49 @@ const Player = ({item, initialAudioIndex, initialSubtitleIndex, onEnded, onBack,
 		}
 	}, [playMethod, closeModal]);
 
+
+const reloadWithBurnIn = useCallback(async (subtitleIndex) => {
+	try {
+		burnInAppliedRef.current = true;
+		setIsLoading(true);
+		setError(null);
+
+		const startTicks = Math.floor((videoRef.current?.currentTime || 0) * 10000000);
+
+		const result = await playback.getPlaybackInfo(item.Id, {
+			startPositionTicks: startTicks,
+			maxBitrate: selectedQuality || settings.maxBitrate,
+			enableDirectPlay: false,
+			enableDirectStream: false,
+			enableTranscoding: true,
+			audioStreamIndex: selectedAudioIndex ?? undefined,
+			subtitleStreamIndex: subtitleIndex
+		});
+
+		setMediaUrl(result.url);
+		setMimeType(result.mimeType || 'video/mp4');
+		setPlayMethod(result.playMethod);
+		setMediaSourceId(result.mediaSourceId);
+		playSessionRef.current = result.playSessionId;
+
+		positionRef.current = startTicks;
+		runTimeRef.current = result.runTimeTicks || 0;
+		setDuration((result.runTimeTicks || 0) / 10000000);
+
+		setAudioStreams(result.audioStreams || []);
+		setSubtitleStreams(result.subtitleStreams || []);
+		setChapters(result.chapters || []);
+
+		setSubtitleTrackEvents(null);
+		setCurrentSubtitleText(null);
+	} catch (err) {
+		console.error('[Player] Failed to reload with burn-in:', err);
+		burnInAppliedRef.current = false;
+	} finally {
+		setIsLoading(false);
+	}
+}, [item.Id, selectedQuality, settings.maxBitrate, selectedAudioIndex]);
+
 	const handleSelectSubtitle = useCallback(async (e) => {
 		const index = parseInt(e.currentTarget.dataset.index, 10);
 		console.log('[Player] handleSelectSubtitle called with index:', index);
@@ -938,6 +1002,17 @@ const Player = ({item, initialAudioIndex, initialSubtitleIndex, onEnded, onBack,
 			setSelectedSubtitleIndex(index);
 			const stream = subtitleStreams.find(s => s.index === index);
 			console.log('[Player] Found stream:', stream ? 'yes' : 'no', 'codec:', stream?.codec, 'isTextBased:', stream?.isTextBased);
+
+// If enabled, burn-in complex subtitles on the server.
+if (settings.transcodeComplexSubtitles && isComplexSubtitleStream(stream)) {
+	console.log('[Player] Complex subtitle selected; requesting server burn-in:', stream?.codec, 'index:', index);
+	setSelectedSubtitleIndex(index);
+	setSubtitleTrackEvents(null);
+	setCurrentSubtitleText(null);
+	await reloadWithBurnIn(index);
+	closeModal();
+	return;
+}
 			// Fetch subtitle data as JSON for custom rendering (webOS doesn't support native <track>)
 			if (stream && stream.isTextBased) {
 				try {
@@ -963,7 +1038,7 @@ const Player = ({item, initialAudioIndex, initialSubtitleIndex, onEnded, onBack,
 			setCurrentSubtitleText(null);
 		}
 		closeModal();
-	}, [subtitleStreams, closeModal]);
+	}, [subtitleStreams, closeModal, settings.transcodeComplexSubtitles, reloadWithBurnIn]);
 
 	const handleSelectSpeed = useCallback((e) => {
 		const rate = parseFloat(e.currentTarget.dataset.rate);
