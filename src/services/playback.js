@@ -54,21 +54,19 @@ const selectMediaSource = (mediaSources, capabilities, options) => {
 };
 
 const determinePlayMethod = (mediaSource, capabilities) => {
-	// Respect platform evaluation for DirectPlay / DirectStream / Transcode.
-	// This prevents HDR/codec constraints from being ignored (which can lead to missing playback URLs).
-	const computed = getPlayMethod(mediaSource, capabilities);
-
-	if (computed === PlayMethod.DirectPlay && mediaSource.SupportsDirectPlay) {
-		return PlayMethod.DirectPlay;
+	if (mediaSource.SupportsDirectPlay) {
+		const computed = getPlayMethod(mediaSource, capabilities);
+		if (computed === PlayMethod.DirectPlay) {
+			return PlayMethod.DirectPlay;
+		}
 	}
 
-	if (computed === PlayMethod.DirectStream && mediaSource.SupportsDirectStream) {
+	if (mediaSource.SupportsDirectStream) {
 		return PlayMethod.DirectStream;
 	}
 
 	return PlayMethod.Transcode;
 };
-
 
 const buildPlaybackUrl = (itemId, mediaSource, playSessionId, playMethod) => {
 	const serverUrl = jellyfinApi.getServerUrl();
@@ -169,6 +167,23 @@ const extractChapters = (mediaSource) => {
 };
 
 export const getPlaybackInfo = async (itemId, options = {}) => {
+
+const normalizeBitrate = (value) => {
+	if (value == null) return undefined;
+	const n = Number(value);
+	if (!Number.isFinite(n) || n <= 0) return undefined;
+
+	// Jellyfin expects MaxStreamingBitrate in bits/sec.
+	// Different UIs store the value in different units:
+	// - Mbps (e.g. 20, 60)
+	// - kbps (e.g. 8000, 64000)
+	// - bps  (e.g. 8000000, 64000000)
+	if (n <= 1000) return Math.round(n * 1_000_000);  // assume Mbps -> bps
+	if (n <= 1_000_000) return Math.round(n * 1000);  // assume kbps -> bps
+	return Math.round(n);                               // assume already bps
+};
+
+
 	const deviceProfile = await getJellyfinDeviceProfile();
 	const capabilities = await getDeviceCapabilities();
 
@@ -181,7 +196,7 @@ export const getPlaybackInfo = async (itemId, options = {}) => {
 		EnableTranscoding: options.enableTranscoding !== false,
 		AudioStreamIndex: options.audioStreamIndex,
 		SubtitleStreamIndex: options.subtitleStreamIndex,
-		MaxStreamingBitrate: options.maxBitrate,
+		MaxStreamingBitrate: normalizeBitrate(options.maxBitrate),
 		MediaSourceId: options.mediaSourceId
 	});
 
